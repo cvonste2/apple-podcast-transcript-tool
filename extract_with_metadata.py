@@ -3,6 +3,7 @@
 Apple Podcast Transcript Extractor with Metadata
 
 Extracts transcripts with proper filenames using podcast metadata from Apple Podcasts database.
+Based on insights from Podsidian (https://github.com/pedramamini/Podsidian)
 """
 
 import os
@@ -12,7 +13,7 @@ from pathlib import Path
 import argparse
 import sys
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class MetadataExtractor:
@@ -34,49 +35,64 @@ class MetadataExtractor:
         self.ttml_dir = home / "Library" / "Group Containers" / "243LU875E5.groups.com.apple.podcasts" / "Library" / "Cache" / "Assets" / "TTML"
         self.db_path = home / "Library" / "Group Containers" / "243LU875E5.groups.com.apple.podcasts" / "Documents" / "MTLibrary.sqlite"
         
-        # Cache for metadata
-        self.metadata_cache = {}
+        # Cache for metadata - keyed by podcast Z_PK
+        self.podcast_cache = {}
+        self.episode_cache = {}
         self._load_metadata()
     
     def _load_metadata(self):
         """Load metadata from Apple Podcasts SQLite database."""
         if not self.db_path.exists():
             print(f"Warning: Database not found at {self.db_path}")
-            print("Will use generic filenames instead.")
+            print("Will use generic filenames instead.\n")
             return
         
         try:
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
             
-            # Query to get episode metadata
-            # The database has tables: ZMTEPISODE, ZMTPODCAST
-            query = """
+            # Load all podcasts
+            cursor.execute("""
                 SELECT 
-                    e.ZGUID as guid,
-                    e.ZTITLE as episode_title,
-                    e.ZPUBDATE as pub_date,
-                    p.ZTITLE as podcast_title,
-                    p.ZAUTHOR as author
-                FROM ZMTEPISODE e
-                LEFT JOIN ZMTPODCAST p ON e.ZPODCAST = p.Z_PK
-            """
+                    Z_PK,
+                    ZTITLE,
+                    ZAUTHOR
+                FROM ZMTPODCAST
+            """)
             
-            cursor.execute(query)
-            rows = cursor.fetchall()
+            for row in cursor.fetchall():
+                pk, title, author = row
+                self.podcast_cache[pk] = {
+                    'title': title or 'Unknown Podcast',
+                    'author': author or 'Unknown Author'
+                }
             
-            for row in rows:
-                guid, episode_title, pub_date, podcast_title, author = row
-                if guid:
-                    self.metadata_cache[guid] = {
-                        'episode_title': episode_title or 'Unknown Episode',
-                        'pub_date': pub_date,
-                        'podcast_title': podcast_title or 'Unknown Podcast',
-                        'author': author
-                    }
+            # Load all episodes
+            cursor.execute("""
+                SELECT 
+                    ZPODCAST,
+                    ZTITLE,
+                    ZPUBDATE,
+                    ZGUID
+                FROM ZMTEPISODE
+            """)
+            
+            for row in cursor.fetchall():
+                podcast_pk, title, pub_date, guid = row
+                if podcast_pk not in self.episode_cache:
+                    self.episode_cache[podcast_pk] = []
+                
+                self.episode_cache[podcast_pk].append({
+                    'title': title or 'Unknown Episode',
+                    'pub_date': pub_date,
+                    'guid': guid
+                })
             
             conn.close()
-            print(f"Loaded metadata for {len(self.metadata_cache)} episodes\n")
+            
+            print(f"Loaded metadata for {len(self.podcast_cache)} podcasts")
+            total_episodes = sum(len(eps) for eps in self.episode_cache.values())
+            print(f"Loaded metadata for {total_episodes} episodes\n")
             
         except Exception as e:
             print(f"Warning: Could not load metadata from database: {e}")
@@ -95,6 +111,8 @@ class MetadataExtractor:
         text = re.sub(r'[<>:"/\\|?*]', '', text)
         # Replace spaces and other whitespace with underscores
         text = re.sub(r'\s+', '_', text)
+        # Remove leading/trailing underscores and dots
+        text = text.strip('_.')
         # Limit length
         if len(text) > 100:
             text = text[:100]
@@ -120,8 +138,23 @@ class MetadataExtractor:
         except:
             return "UnknownDate"
     
-    def _get_metadata_from_ttml(self, ttml_path):
-        """Try to extract metadata from TTML filename or content.
+    def _get_podcast_id_from_path(self, ttml_path):
+        """Extract podcast ID from the PodcastContent### folder structure.
+        
+        Args:
+            ttml_path: Path to TTML file
+            
+        Returns:
+            Podcast ID (int) or None
+        """
+        # Look for PodcastContent### in the path
+        match = re.search(r'PodcastContent(\d+)', str(ttml_path))
+        if match:
+            return int(match.group(1))
+        return None
+    
+    def _get_metadata_from_path(self, ttml_path):
+        """Get metadata for a TTML file based on its path.
         
         Args:
             ttml_path: Path to TTML file
@@ -129,16 +162,56 @@ class MetadataExtractor:
         Returns:
             Dictionary with metadata or None
         """
-        # The TTML filename often contains a GUID or ID
-        # Try to match it with database metadata
-        filename = ttml_path.stem
+        podcast_id = self._get_podcast_id_from_path(ttml_path)
         
-        # Check if we have metadata for this file
-        for guid, metadata in self.metadata_cache.items():
-            if guid and guid in str(ttml_path):
-                return metadata
+        if podcast_id is None:
+            return None
         
-        return None
+        # Get podcast metadata
+        podcast_info = self.podcast_cache.get(podcast_id)
+        if not podcast_info:
+            return None
+        
+        # Get episodes for this podcast
+        episodes = self.episode_cache.get(podcast_id, [])
+        
+        if not episodes:
+            # Return podcast info without episode details
+            return {
+                'podcast_title': podcast_info['title'],
+                'episode_title': 'Unknown Episode',
+                'pub_date': None,
+                'author': podcast_info['author']
+            }
+        
+        # For now, we'll use the most recent episode for this podcast
+        # In a perfect world, we'd match based on file modification time or other criteria
+        # Sort by pub_date descending
+        episodes_sorted = sorted(
+            [e for e in episodes if e['pub_date'] is not None],
+            key=lambda x: x['pub_date'],
+            reverse=True
+        )
+        
+        if episodes_sorted:
+            episode = episodes_sorted[0]
+        else:
+            episode = episodes[0] if episodes else None
+        
+        if episode:
+            return {
+                'podcast_title': podcast_info['title'],
+                'episode_title': episode['title'],
+                'pub_date': episode['pub_date'],
+                'author': podcast_info['author']
+            }
+        
+        return {
+            'podcast_title': podcast_info['title'],
+            'episode_title': 'Unknown Episode',
+            'pub_date': None,
+            'author': podcast_info['author']
+        }
     
     def format_timestamp(self, seconds):
         """Convert seconds to HH:MM:SS format."""
@@ -210,22 +283,23 @@ class MetadataExtractor:
             return None
         
         # Get metadata
-        metadata = self._get_metadata_from_ttml(ttml_path)
+        metadata = self._get_metadata_from_path(ttml_path)
         
         # Generate filename with metadata
         if metadata:
             podcast_name = self._sanitize_filename(metadata['podcast_title'])
             episode_title = self._sanitize_filename(metadata['episode_title'])
-            
-            # Try to format date
-            from datetime import timedelta
             date_str = self._format_date(metadata['pub_date'])
             
             # Create descriptive filename
             filename = f"{podcast_name}_{date_str}_{episode_title}.txt"
         else:
-            # Fallback to original filename
-            filename = f"{ttml_path.stem}.txt"
+            # Fallback to path-based naming
+            podcast_id = self._get_podcast_id_from_path(ttml_path)
+            if podcast_id:
+                filename = f"Podcast_{podcast_id}_{ttml_path.stem}.txt"
+            else:
+                filename = f"{ttml_path.stem}.txt"
         
         output_path = self.output_dir / filename
         
@@ -247,8 +321,10 @@ class MetadataExtractor:
         if metadata:
             header = f"""Podcast: {metadata['podcast_title']}
 Episode: {metadata['episode_title']}
-Date: {date_str}
-{'='*70}\n\n"""
+Date: {self._format_date(metadata['pub_date'])}
+{'='*70}
+
+"""
             output_text = header + output_text
         
         # Write to file
