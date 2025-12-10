@@ -81,7 +81,9 @@ class TranscriptExtractor:
             
             for para in paragraphs:
                 # Extract all text from paragraph and its children
-                text = ''.join(para.itertext()).strip()
+                # Join with spaces to preserve word boundaries
+                text_parts = [t.strip() for t in para.itertext() if t.strip()]
+                text = ' '.join(text_parts)
                 
                 if text:
                     if self.include_timestamps:
