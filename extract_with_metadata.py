@@ -13,7 +13,9 @@ from pathlib import Path
 import argparse
 import sys
 import re
+import csv
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 
 class MetadataExtractor:
@@ -40,6 +42,19 @@ class MetadataExtractor:
         # Cache for metadata - keyed by podcast Z_PK
         self.podcast_cache = {}
         self.episode_cache = {}
+        
+        # Tracking for unmatched items
+        self.transcript_files = []  # List of all transcript files found
+        self.matched_transcripts = set()  # Set of matched transcript file stems
+        self.failed_parsing = []  # List of files that failed trackid parsing
+        self.db_trackids = set()  # Set of all trackids/GUIDs from database
+        
+        # Log files
+        self.unmatched_transcript_log = self.output_dir / "unmatched_transcripts.log"
+        self.unmatched_db_log = self.output_dir / "unmatched_db_entries.log"
+        self.mapping_csv = self.output_dir / "transcript_mappings.csv"
+        self.failed_parsing_log = self.output_dir / "failed_parsing.log"
+        
         self._load_metadata()
     
     def _load_metadata(self):
@@ -107,6 +122,11 @@ class MetadataExtractor:
                         'pub_date': pub_date,
                         'guid': guid
                     })
+                    
+                    # Track all database trackids for later comparison
+                    if guid:
+                        self.db_trackids.add(guid)
+                    
                     if self.debug and sum(len(eps) for eps in self.episode_cache.values()) <= 3:
                         print(f"[DEBUG] Loaded episode for podcast {podcast_pk}: {title}")
                 
@@ -191,6 +211,52 @@ class MetadataExtractor:
             print(f"  [DEBUG] No podcast ID found in path: {ttml_path}")
         return None
     
+    def _extract_trackid_from_filename(self, ttml_path):
+        """Extract trackid from TTML filename with robust parsing.
+        
+        Handles various filename patterns including:
+        - Standard GUIDs
+        - transcript_ABC.ttml patterns
+        - Numeric IDs
+        - URL-encoded filenames
+        
+        Args:
+            ttml_path: Path to TTML file
+            
+        Returns:
+            Tuple of (trackid, success_flag) where trackid is a string or None
+        """
+        filename = ttml_path.stem
+        
+        # Pattern 1: Standard filename (just use as-is)
+        if filename and len(filename) > 0:
+            # Check for common problematic patterns
+            if filename.startswith('transcript_'):
+                # Extract part after 'transcript_'
+                trackid = filename[11:]  # len('transcript_') = 11
+                if trackid:
+                    if self.debug:
+                        print(f"  [DEBUG] Extracted trackid '{trackid}' from pattern 'transcript_*'")
+                    return trackid, True
+                else:
+                    if self.debug:
+                        print(f"  [DEBUG] Failed to extract trackid from 'transcript_*' pattern: {filename}")
+                    return None, False
+            
+            # Pattern 2: Looks like a valid GUID or identifier (at least 8 chars)
+            if len(filename) >= 8:
+                return filename, True
+            
+            # Pattern 3: Short filename, might be problematic but try it
+            if self.debug:
+                print(f"  [DEBUG] Short filename detected: '{filename}' (len={len(filename)})")
+            return filename, True
+        
+        # No valid trackid found
+        if self.debug:
+            print(f"  [DEBUG] Could not extract trackid from: {ttml_path}")
+        return None, False
+    
     def _get_episode_guid_from_path(self, ttml_path):
         """Extract episode GUID from TTML filename.
         
@@ -200,8 +266,14 @@ class MetadataExtractor:
         Returns:
             Episode GUID (string) or None
         """
-        # The filename (without .ttml) is often the episode GUID
-        return ttml_path.stem
+        # Use the robust trackid extraction method
+        trackid, success = self._extract_trackid_from_filename(ttml_path)
+        
+        # Log failures for later reporting
+        if not success:
+            self.failed_parsing.append(str(ttml_path))
+        
+        return trackid
     
     def _get_metadata_from_path(self, ttml_path):
         """Get metadata for a TTML file based on its path.
@@ -369,6 +441,9 @@ class MetadataExtractor:
         
         Args:
             ttml_path: Path to TTML file
+            
+        Returns:
+            Dictionary with mapping info or None if failed
         """
         if self.debug:
             print(f"\n[DEBUG] Processing: {ttml_path}")
@@ -381,6 +456,11 @@ class MetadataExtractor:
         
         # Get metadata
         metadata = self._get_metadata_from_path(ttml_path)
+        
+        # Track this transcript file stem for later comparison
+        trackid, _ = self._extract_trackid_from_filename(ttml_path)
+        if trackid and metadata:
+            self.matched_transcripts.add(trackid)
         
         if self.debug:
             if metadata:
@@ -444,25 +524,214 @@ Author: {metadata['author']}
             f.write(output_text)
         
         print(f"✓ Saved: {output_path.name}")
-        return output_path
+        
+        # Return mapping info for CSV output
+        mapping_info = {
+            'transcript_file': ttml_path.name,
+            'trackid': trackid or ttml_path.stem,
+            'output_file': output_path.name,
+            'matched': metadata is not None
+        }
+        
+        if metadata:
+            mapping_info.update({
+                'podcast_title': metadata['podcast_title'],
+                'episode_title': metadata['episode_title'],
+                'pub_date': self._format_date(metadata['pub_date']),
+                'author': metadata['author']
+            })
+        else:
+            mapping_info.update({
+                'podcast_title': '',
+                'episode_title': '',
+                'pub_date': '',
+                'author': ''
+            })
+        
+        return mapping_info
     
     def extract_all(self):
-        """Extract all transcripts with metadata."""
+        """Extract all transcripts with metadata and generate logs."""
         ttml_files = self.find_ttml_files()
         
         if not ttml_files:
             print("No TTML files found.")
             return
         
+        # Store all transcript file information
+        self.transcript_files = ttml_files
+        
         print(f"Found {len(ttml_files)} transcript file(s)\n")
         
+        # Process all files and collect mapping information
+        mapping_results = []
         extracted = 0
+        
         for ttml_path in ttml_files:
             result = self.extract_single_file(ttml_path)
             if result:
                 extracted += 1
+                mapping_results.append(result)
         
         print(f"\n✓ Extraction complete! {extracted} files saved to: {self.output_dir.absolute()}")
+        
+        # Generate CSV with successfully mapped entries
+        self._write_mapping_csv(mapping_results)
+        
+        # Generate unmatched logs
+        self._write_unmatched_logs()
+        
+        # Write failed parsing log
+        self._write_failed_parsing_log()
+        
+        # Print summary
+        self._print_summary(mapping_results)
+    
+    def _write_mapping_csv(self, mapping_results):
+        """Write CSV file with all transcript-to-episode mappings.
+        
+        Args:
+            mapping_results: List of mapping info dictionaries
+        """
+        if not mapping_results:
+            return
+        
+        try:
+            with open(self.mapping_csv, 'w', newline='', encoding='utf-8') as f:
+                fieldnames = [
+                    'transcript_file', 'trackid', 'output_file', 'matched',
+                    'podcast_title', 'episode_title', 'pub_date', 'author'
+                ]
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                
+                writer.writeheader()
+                for result in mapping_results:
+                    writer.writerow(result)
+            
+            print(f"✓ Mapping CSV saved to: {self.mapping_csv.name}")
+        except Exception as e:
+            print(f"Warning: Could not write mapping CSV: {e}")
+    
+    def _write_unmatched_logs(self):
+        """Write log files for unmatched transcript files and database entries."""
+        # Find unmatched transcript files (those without metadata match)
+        unmatched_transcripts = []
+        for ttml_path in self.transcript_files:
+            trackid, success = self._extract_trackid_from_filename(ttml_path)
+            if trackid and trackid not in self.matched_transcripts:
+                unmatched_transcripts.append({
+                    'file': ttml_path.name,
+                    'trackid': trackid,
+                    'path': str(ttml_path)
+                })
+        
+        # Write unmatched transcript files log
+        if unmatched_transcripts:
+            try:
+                with open(self.unmatched_transcript_log, 'w', encoding='utf-8') as f:
+                    f.write("Transcript Files Without Database Matches\n")
+                    f.write("=" * 70 + "\n\n")
+                    f.write(f"Total unmatched: {len(unmatched_transcripts)}\n\n")
+                    
+                    for item in unmatched_transcripts:
+                        f.write(f"File: {item['file']}\n")
+                        f.write(f"Trackid: {item['trackid']}\n")
+                        f.write(f"Path: {item['path']}\n")
+                        f.write("-" * 70 + "\n")
+                
+                print(f"✓ Unmatched transcripts log: {self.unmatched_transcript_log.name} ({len(unmatched_transcripts)} entries)")
+            except Exception as e:
+                print(f"Warning: Could not write unmatched transcripts log: {e}")
+        
+        # Find database trackids without transcript files
+        transcript_trackids = set()
+        for ttml_path in self.transcript_files:
+            trackid, success = self._extract_trackid_from_filename(ttml_path)
+            if trackid:
+                transcript_trackids.add(trackid)
+        
+        unmatched_db_entries = self.db_trackids - transcript_trackids
+        
+        # Write unmatched database entries log
+        if unmatched_db_entries:
+            try:
+                with open(self.unmatched_db_log, 'w', encoding='utf-8') as f:
+                    f.write("Database Entries Without Transcript Files\n")
+                    f.write("=" * 70 + "\n\n")
+                    f.write(f"Total unmatched: {len(unmatched_db_entries)}\n\n")
+                    f.write("These episode GUIDs are in the database but no corresponding transcript file was found.\n")
+                    f.write("This may be normal if:\n")
+                    f.write("  - The episode doesn't have a transcript available\n")
+                    f.write("  - The episode hasn't been downloaded yet\n")
+                    f.write("  - The transcript hasn't been cached yet\n\n")
+                    
+                    for guid in sorted(unmatched_db_entries):
+                        f.write(f"{guid}\n")
+                
+                print(f"✓ Unmatched DB entries log: {self.unmatched_db_log.name} ({len(unmatched_db_entries)} entries)")
+            except Exception as e:
+                print(f"Warning: Could not write unmatched DB entries log: {e}")
+    
+    def _write_failed_parsing_log(self):
+        """Write log file for transcript files that failed trackid parsing."""
+        if not self.failed_parsing:
+            return
+        
+        try:
+            with open(self.failed_parsing_log, 'w', encoding='utf-8') as f:
+                f.write("Transcript Files That Failed Trackid Parsing\n")
+                f.write("=" * 70 + "\n\n")
+                f.write(f"Total failed: {len(self.failed_parsing)}\n\n")
+                f.write("These files could not be parsed to extract a trackid.\n")
+                f.write("Check the filename patterns and update the parsing logic if needed.\n\n")
+                
+                for filepath in self.failed_parsing:
+                    f.write(f"{filepath}\n")
+            
+            print(f"✓ Failed parsing log: {self.failed_parsing_log.name} ({len(self.failed_parsing)} entries)")
+        except Exception as e:
+            print(f"Warning: Could not write failed parsing log: {e}")
+    
+    def _print_summary(self, mapping_results):
+        """Print summary of the extraction and mapping process.
+        
+        Args:
+            mapping_results: List of mapping info dictionaries
+        """
+        print("\n" + "=" * 70)
+        print("SUMMARY")
+        print("=" * 70)
+        
+        total_files = len(self.transcript_files)
+        matched = sum(1 for r in mapping_results if r['matched'])
+        unmatched = len(mapping_results) - matched
+        
+        print(f"Total transcript files found: {total_files}")
+        print(f"Successfully mapped to episodes: {matched}")
+        print(f"Could not map to episodes: {unmatched}")
+        print(f"Failed trackid parsing: {len(self.failed_parsing)}")
+        print(f"Database entries without transcripts: {len(self.db_trackids - {r['trackid'] for r in mapping_results})}")
+        
+        print("\nOutput files:")
+        print(f"  - Transcripts: {self.output_dir.absolute()}")
+        print(f"  - Mapping CSV: {self.mapping_csv.name}")
+        if self.failed_parsing:
+            print(f"  - Failed parsing log: {self.failed_parsing_log.name}")
+        
+        # Count unmatched transcript files
+        unmatched_count = 0
+        for ttml_path in self.transcript_files:
+            trackid, _ = self._extract_trackid_from_filename(ttml_path)
+            if trackid and trackid not in self.matched_transcripts:
+                unmatched_count += 1
+        
+        if unmatched_count > 0:
+            print(f"  - Unmatched transcripts log: {self.unmatched_transcript_log.name}")
+        
+        if len(self.db_trackids) > 0:
+            print(f"  - Unmatched DB entries log: {self.unmatched_db_log.name}")
+        
+        print("\n" + "=" * 70)
 
 
 def main():
