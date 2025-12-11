@@ -19,15 +19,17 @@ from datetime import datetime, timedelta
 class MetadataExtractor:
     """Handles extraction of TTML transcripts with metadata from Apple Podcasts."""
     
-    def __init__(self, output_dir="transcripts_with_metadata", include_timestamps=False):
+    def __init__(self, output_dir="transcripts_with_metadata", include_timestamps=False, debug=False):
         """Initialize the extractor.
         
         Args:
             output_dir: Directory to save extracted transcripts
             include_timestamps: Whether to include timestamps in output
+            debug: Whether to print debug information
         """
         self.output_dir = Path(output_dir)
         self.include_timestamps = include_timestamps
+        self.debug = debug
         self.output_dir.mkdir(exist_ok=True)
         
         # Apple Podcasts paths
@@ -150,7 +152,12 @@ class MetadataExtractor:
         # Look for PodcastContent### in the path
         match = re.search(r'PodcastContent(\d+)', str(ttml_path))
         if match:
-            return int(match.group(1))
+            podcast_id = int(match.group(1))
+            if self.debug:
+                print(f"  [DEBUG] Found podcast ID {podcast_id} in path: {ttml_path}")
+            return podcast_id
+        if self.debug:
+            print(f"  [DEBUG] No podcast ID found in path: {ttml_path}")
         return None
     
     def _get_metadata_from_path(self, ttml_path):
@@ -165,18 +172,28 @@ class MetadataExtractor:
         podcast_id = self._get_podcast_id_from_path(ttml_path)
         
         if podcast_id is None:
+            if self.debug:
+                print(f"  [DEBUG] Cannot extract metadata - no podcast ID")
             return None
         
         # Get podcast metadata
         podcast_info = self.podcast_cache.get(podcast_id)
         if not podcast_info:
+            if self.debug:
+                print(f"  [DEBUG] No podcast info found for ID {podcast_id}")
+                print(f"  [DEBUG] Available podcast IDs: {list(self.podcast_cache.keys())}")
             return None
         
         # Get episodes for this podcast
         episodes = self.episode_cache.get(podcast_id, [])
         
+        if self.debug:
+            print(f"  [DEBUG] Found {len(episodes)} episodes for podcast ID {podcast_id}")
+        
         if not episodes:
             # Return podcast info without episode details
+            if self.debug:
+                print(f"  [DEBUG] No episodes found, using default metadata")
             return {
                 'podcast_title': podcast_info['title'],
                 'episode_title': 'Unknown Episode',
@@ -193,10 +210,17 @@ class MetadataExtractor:
             reverse=True
         )
         
+        if self.debug:
+            print(f"  [DEBUG] Sorted {len(episodes_sorted)} episodes by date")
+        
         if episodes_sorted:
             episode = episodes_sorted[0]
+            if self.debug:
+                print(f"  [DEBUG] Using most recent episode: {episode['title']}")
         else:
             episode = episodes[0] if episodes else None
+            if self.debug and episode:
+                print(f"  [DEBUG] Using first episode (no dates): {episode['title']}")
         
         if episode:
             return {
@@ -276,6 +300,9 @@ class MetadataExtractor:
         Args:
             ttml_path: Path to TTML file
         """
+        if self.debug:
+            print(f"\n[DEBUG] Processing: {ttml_path}")
+        
         transcript_parts = self.parse_ttml(ttml_path)
         
         if not transcript_parts:
@@ -285,6 +312,16 @@ class MetadataExtractor:
         # Get metadata
         metadata = self._get_metadata_from_path(ttml_path)
         
+        if self.debug:
+            if metadata:
+                print(f"  [DEBUG] Metadata found:")
+                print(f"    Podcast: {metadata['podcast_title']}")
+                print(f"    Episode: {metadata['episode_title']}")
+                print(f"    Date: {self._format_date(metadata['pub_date'])}")
+                print(f"    Author: {metadata['author']}")
+            else:
+                print(f"  [DEBUG] No metadata found for this file")
+        
         # Generate filename with metadata
         if metadata:
             podcast_name = self._sanitize_filename(metadata['podcast_title'])
@@ -293,6 +330,8 @@ class MetadataExtractor:
             
             # Create descriptive filename
             filename = f"{podcast_name}_{date_str}_{episode_title}.txt"
+            if self.debug:
+                print(f"  [DEBUG] Generated filename: {filename}")
         else:
             # Fallback to path-based naming
             podcast_id = self._get_podcast_id_from_path(ttml_path)
@@ -300,6 +339,8 @@ class MetadataExtractor:
                 filename = f"Podcast_{podcast_id}_{ttml_path.stem}.txt"
             else:
                 filename = f"{ttml_path.stem}.txt"
+            if self.debug:
+                print(f"  [DEBUG] Using fallback filename: {filename}")
         
         output_path = self.output_dir / filename
         
@@ -322,6 +363,7 @@ class MetadataExtractor:
             header = f"""Podcast: {metadata['podcast_title']}
 Episode: {metadata['episode_title']}
 Date: {self._format_date(metadata['pub_date'])}
+Author: {metadata['author']}
 {'='*70}
 
 """
@@ -381,12 +423,19 @@ def main():
         help='Output directory for transcripts (default: transcripts_with_metadata)'
     )
     
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug output to trace metadata extraction'
+    )
+    
     args = parser.parse_args()
     
     # Create extractor
     extractor = MetadataExtractor(
         output_dir=args.output,
-        include_timestamps=args.timestamps
+        include_timestamps=args.timestamps,
+        debug=args.debug
     )
     
     # Extract transcripts
