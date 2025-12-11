@@ -48,6 +48,8 @@ class MetadataExtractor:
         self.matched_transcripts = set()  # Set of matched transcript file stems
         self.failed_parsing = []  # List of files that failed trackid parsing
         self.db_trackids = set()  # Set of all trackids/GUIDs from database
+        self.unmatched_transcript_count = 0  # Count of unmatched transcripts
+        self.unmatched_db_count = 0  # Count of unmatched database entries
         
         # Log files
         self.unmatched_transcript_log = self.output_dir / "unmatched_transcripts.log"
@@ -528,9 +530,13 @@ Author: {metadata['author']}
         print(f"✓ Saved: {output_path.name}")
         
         # Return mapping info for CSV output
+        # Use the extracted trackid, or fall back to filename stem if extraction failed
+        if not trackid:
+            trackid, _ = self._extract_trackid_from_filename(ttml_path)
+        
         mapping_info = {
             'transcript_file': ttml_path.name,
-            'trackid': trackid or ttml_path.stem,
+            'trackid': trackid if trackid else ttml_path.stem,
             'output_file': output_path.name,
             'matched': metadata is not None
         }
@@ -617,15 +623,23 @@ Author: {metadata['author']}
     def _write_unmatched_logs(self):
         """Write log files for unmatched transcript files and database entries."""
         # Find unmatched transcript files (those without metadata match)
+        # Store both matched and unmatched for later use
         unmatched_transcripts = []
+        transcript_trackids = set()
+        
         for ttml_path in self.transcript_files:
             trackid, success = self._extract_trackid_from_filename(ttml_path)
-            if trackid and trackid not in self.matched_transcripts:
-                unmatched_transcripts.append({
-                    'file': ttml_path.name,
-                    'trackid': trackid,
-                    'path': str(ttml_path)
-                })
+            if trackid:
+                transcript_trackids.add(trackid)
+                if trackid not in self.matched_transcripts:
+                    unmatched_transcripts.append({
+                        'file': ttml_path.name,
+                        'trackid': trackid,
+                        'path': str(ttml_path)
+                    })
+        
+        # Store counts for later use in summary
+        self.unmatched_transcript_count = len(unmatched_transcripts)
         
         # Write unmatched transcript files log
         if unmatched_transcripts:
@@ -645,14 +659,9 @@ Author: {metadata['author']}
             except Exception as e:
                 print(f"Warning: Could not write unmatched transcripts log: {e}")
         
-        # Find database trackids without transcript files
-        transcript_trackids = set()
-        for ttml_path in self.transcript_files:
-            trackid, success = self._extract_trackid_from_filename(ttml_path)
-            if trackid:
-                transcript_trackids.add(trackid)
-        
+        # Find database trackids without transcript files (using pre-calculated set)
         unmatched_db_entries = self.db_trackids - transcript_trackids
+        self.unmatched_db_count = len(unmatched_db_entries)
         
         # Write unmatched database entries log
         if unmatched_db_entries:
@@ -724,18 +733,12 @@ Author: {metadata['author']}
         if self.failed_parsing:
             print(f"  - Failed parsing log: {self.failed_parsing_log.name}")
         
-        # Count unmatched transcript files
-        unmatched_count = 0
-        for ttml_path in self.transcript_files:
-            trackid, _ = self._extract_trackid_from_filename(ttml_path)
-            if trackid and trackid not in self.matched_transcripts:
-                unmatched_count += 1
-        
-        if unmatched_count > 0:
+        # Use pre-calculated counts from _write_unmatched_logs
+        if hasattr(self, 'unmatched_transcript_count') and self.unmatched_transcript_count > 0:
             print(f"  - Unmatched transcripts log: {self.unmatched_transcript_log.name}")
         
         # Only mention the DB log if it was actually created (i.e., there are unmatched entries)
-        if unmatched_db_count > 0:
+        if hasattr(self, 'unmatched_db_count') and self.unmatched_db_count > 0:
             print(f"  - Unmatched DB entries log: {self.unmatched_db_log.name}")
         
         print("\n" + "=" * 70)
