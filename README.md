@@ -29,6 +29,18 @@ Apple Podcasts automatically downloads transcript files (TTML format) when you d
 
 ## Usage
 
+### Quick Start
+
+For the best experience with organized, searchable transcripts:
+
+```bash
+# Extract all transcripts with metadata (recommended)
+python3 extract_with_metadata.py
+
+# Or extract basic transcripts without metadata
+python3 extract_transcripts.py
+```
+
 ### Extract All Transcripts
 
 Simplest usage - extracts all transcripts from your Apple Podcasts cache:
@@ -87,10 +99,61 @@ This creates files like:
 - Creates human-readable filenames
 - Adds metadata header to each transcript
 - Matches episodes by GUID for accuracy
+- Generates detailed logs and CSV mapping file
+
+**Output Files:**
+
+When you run the script, it generates several output files in the `transcripts_with_metadata/` directory:
+
+1. **Transcript files** (`.txt`): The extracted transcripts with metadata headers
+2. **transcript_mappings.csv**: Complete mapping of transcript files to episodes with metadata
+3. **unmatched_transcripts.log**: Transcript files that couldn't be matched to database episodes
+4. **unmatched_db_entries.log**: Database episodes without corresponding transcript files
+5. **failed_parsing.log**: Files where trackid extraction failed (only if parsing issues occur)
+
+**Interpreting the Logs:**
+
+- **transcript_mappings.csv**: Use this to verify all mappings. Each row shows:
+  - `transcript_file`: Original TTML filename
+  - `trackid`: Extracted identifier from filename
+  - `output_file`: Generated transcript filename
+  - `matched`: Whether metadata was found (true/false)
+  - `podcast_title`, `episode_title`, `pub_date`, `author`: Episode metadata
+
+- **unmatched_transcripts.log**: Lists transcript files found in the cache but not matched to database entries. This can happen if:
+  - The podcast database hasn't been synced
+  - The episode was deleted from the database but transcript remains cached
+  - The trackid extraction didn't match the database GUID format
+
+- **unmatched_db_entries.log**: Lists episode GUIDs in the database without transcript files. This is normal when:
+  - Episodes don't have transcripts available
+  - Episodes haven't been downloaded yet
+  - Transcripts haven't been cached yet
+
+- **failed_parsing.log**: Lists files where trackid couldn't be extracted. Check these files manually if they appear. Common causes:
+  - Unexpected filename patterns
+  - Empty or corrupted filenames
+
+**Handling Issues:**
+
+1. **High number of unmatched transcripts**: 
+   - Check if the Apple Podcasts app is running and synced
+   - Try running with `--debug` to see detailed matching attempts
+   - Review the trackids in `unmatched_transcripts.log` to identify patterns
+
+2. **Generic filenames in output**:
+   - This means metadata lookup failed
+   - Check `transcript_mappings.csv` to see which files weren't matched
+   - Run with `--debug` to see why matching failed
+
+3. **Failed parsing entries**:
+   - These files have unusual naming patterns
+   - Review the files listed in `failed_parsing.log`
+   - Consider updating the trackid extraction logic if you identify new patterns
 
 **Debug Mode:**
 
-If filenames aren't being generated correctly, use debug mode to troubleshoot:
+If you need detailed troubleshooting information:
 
 ```bash
 python3 extract_with_metadata.py --debug
@@ -100,12 +163,8 @@ This will show:
 - Database tables and columns found
 - Podcast and episode metadata loaded
 - Matching process for each file
+- Trackid extraction details
 - Why metadata lookup succeeds or fails
-
-**Common Issues:**
-- Generic filenames (`Podcast_221_transcript...txt`): Metadata lookup failed. Run with `--debug` to see why.
-- Missing headers: Check that the database exists at the expected location.
-- Wrong episode matched: The script matches by episode GUID first, then falls back to most recent episode.
 
 ## 🔍 Search Transcripts
 

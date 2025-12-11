@@ -49,3 +49,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# CSV output files
+transcript_mappings.csv
