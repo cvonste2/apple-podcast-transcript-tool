@@ -252,11 +252,21 @@ class MetadataExtractor:
         episode = None
         if episode_guid:
             for ep in episodes:
-                if ep['guid'] and episode_guid in ep['guid']:
-                    episode = ep
-                    if self.debug:
-                        print(f"  [DEBUG] Matched episode by GUID: {episode['title']}")
-                    break
+                if ep['guid']:
+                    # Try exact match first
+                    if ep['guid'] == episode_guid:
+                        episode = ep
+                        if self.debug:
+                            print(f"  [DEBUG] Matched episode by exact GUID: {episode['title']}")
+                        break
+                    # Try if GUID contains the episode_guid or vice versa (for URL-based GUIDs)
+                    # Only if one is substantially contained in the other
+                    elif (episode_guid in ep['guid'] and len(episode_guid) > 10) or \
+                         (ep['guid'] in episode_guid and len(ep['guid']) > 10):
+                        episode = ep
+                        if self.debug:
+                            print(f"  [DEBUG] Matched episode by GUID substring: {episode['title']}")
+                        break
         
         # If no GUID match, fall back to using the most recent episode
         if not episode:
