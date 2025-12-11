@@ -231,7 +231,7 @@ class MetadataExtractor:
         filename = ttml_path.stem
         
         # Pattern 1: Standard filename (just use as-is)
-        if filename and len(filename) > 0:
+        if filename:
             # Check for common problematic patterns
             if filename.startswith('transcript_'):
                 # Extract part after 'transcript_'
@@ -457,13 +457,14 @@ class MetadataExtractor:
             print(f"No content extracted from {ttml_path.name}")
             return None
         
+        # Extract trackid once for reuse
+        trackid, success = self._extract_trackid_from_filename(ttml_path)
+        
         # Get metadata
         metadata = self._get_metadata_from_path(ttml_path)
         
-        # Track this transcript file stem for later comparison
-        # Mark as matched if we successfully extracted a trackid
-        trackid, success = self._extract_trackid_from_filename(ttml_path)
-        if trackid and success and metadata:
+        # Track matched transcripts (those with metadata found)
+        if metadata and trackid:
             self.matched_transcripts.add(trackid)
         
         if self.debug:
@@ -530,10 +531,7 @@ Author: {metadata['author']}
         print(f"✓ Saved: {output_path.name}")
         
         # Return mapping info for CSV output
-        # Use the extracted trackid, or fall back to filename stem if extraction failed
-        if not trackid:
-            trackid, _ = self._extract_trackid_from_filename(ttml_path)
-        
+        # trackid was already extracted at the start of this method
         mapping_info = {
             'transcript_file': ttml_path.name,
             'trackid': trackid if trackid else ttml_path.stem,
@@ -723,8 +721,8 @@ Author: {metadata['author']}
         print(f"Failed trackid parsing: {len(self.failed_parsing)}")
         
         # Calculate database entries without transcripts
-        result_trackids = set(r['trackid'] for r in mapping_results)
-        unmatched_db_count = len(self.db_trackids - result_trackids)
+        # Use matched_transcripts which only includes successfully matched trackids
+        unmatched_db_count = len(self.db_trackids - self.matched_transcripts)
         print(f"Database entries without transcripts: {unmatched_db_count}")
         
         print("\nOutput files:")
