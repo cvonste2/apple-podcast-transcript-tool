@@ -233,7 +233,8 @@ class MetadataExtractor:
             # Check for common problematic patterns
             if filename.startswith('transcript_'):
                 # Extract part after 'transcript_'
-                trackid = filename[11:]  # len('transcript_') = 11
+                prefix_len = len('transcript_')
+                trackid = filename[prefix_len:]
                 if trackid:
                     if self.debug:
                         print(f"  [DEBUG] Extracted trackid '{trackid}' from pattern 'transcript_*'")
@@ -458,8 +459,9 @@ class MetadataExtractor:
         metadata = self._get_metadata_from_path(ttml_path)
         
         # Track this transcript file stem for later comparison
-        trackid, _ = self._extract_trackid_from_filename(ttml_path)
-        if trackid and metadata:
+        # Mark as matched if we successfully extracted a trackid
+        trackid, success = self._extract_trackid_from_filename(ttml_path)
+        if trackid and success and metadata:
             self.matched_transcripts.add(trackid)
         
         if self.debug:
@@ -710,7 +712,11 @@ Author: {metadata['author']}
         print(f"Successfully mapped to episodes: {matched}")
         print(f"Could not map to episodes: {unmatched}")
         print(f"Failed trackid parsing: {len(self.failed_parsing)}")
-        print(f"Database entries without transcripts: {len(self.db_trackids - {r['trackid'] for r in mapping_results})}")
+        
+        # Calculate database entries without transcripts
+        result_trackids = set(r['trackid'] for r in mapping_results)
+        unmatched_db_count = len(self.db_trackids - result_trackids)
+        print(f"Database entries without transcripts: {unmatched_db_count}")
         
         print("\nOutput files:")
         print(f"  - Transcripts: {self.output_dir.absolute()}")
@@ -728,7 +734,8 @@ Author: {metadata['author']}
         if unmatched_count > 0:
             print(f"  - Unmatched transcripts log: {self.unmatched_transcript_log.name}")
         
-        if len(self.db_trackids) > 0:
+        # Only mention the DB log if it was actually created (i.e., there are unmatched entries)
+        if unmatched_db_count > 0:
             print(f"  - Unmatched DB entries log: {self.unmatched_db_log.name}")
         
         print("\n" + "=" * 70)
