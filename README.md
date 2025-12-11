@@ -70,6 +70,43 @@ Process a specific TTML file:
 python3 extract_transcripts.py --file /path/to/file.ttml
 ```
 
+### 📋 Extract Transcripts with Metadata
+
+For better organization, use `extract_with_metadata.py` which creates descriptive filenames and adds metadata headers:
+
+```bash
+python3 extract_with_metadata.py
+```
+
+This creates files like:
+- Filename: `a16z_Podcast_2024-12-05_Identity_Theft_and_Social_Security.txt`
+- Header includes: Podcast name, Episode title, Date, Author
+
+**Features:**
+- Reads podcast metadata from Apple Podcasts database
+- Creates human-readable filenames
+- Adds metadata header to each transcript
+- Matches episodes by GUID for accuracy
+
+**Debug Mode:**
+
+If filenames aren't being generated correctly, use debug mode to troubleshoot:
+
+```bash
+python3 extract_with_metadata.py --debug
+```
+
+This will show:
+- Database tables and columns found
+- Podcast and episode metadata loaded
+- Matching process for each file
+- Why metadata lookup succeeds or fails
+
+**Common Issues:**
+- Generic filenames (`Podcast_221_transcript...txt`): Metadata lookup failed. Run with `--debug` to see why.
+- Missing headers: Check that the database exists at the expected location.
+- Wrong episode matched: The script matches by episode GUID first, then falls back to most recent episode.
+
 ## 🔍 Search Transcripts
 
 Once you've extracted transcripts, you can search across all of them:
@@ -176,6 +213,18 @@ TranscriptExtractor
 └── extract_all()          # Batch processes all transcripts
 ```
 
+### extract_with_metadata.py
+```
+MetadataExtractor (extends TranscriptExtractor)
+├── _load_metadata()           # Loads from SQLite database
+├── _get_podcast_id_from_path() # Extracts PodcastContent###
+├── _get_episode_guid_from_path() # Extracts episode GUID
+├── _get_metadata_from_path()  # Matches file to episode
+├── _sanitize_filename()       # Cleans text for filenames
+├── _format_date()             # Formats Core Data timestamps
+└── extract_single_file()      # Adds metadata header & filename
+```
+
 ### search_transcripts.py
 ```
 Search Functions
@@ -193,6 +242,7 @@ Search Functions
 - Robust namespace handling for XML parsing
 - Case-insensitive search by default
 - Clear error messages for common issues
+- Debug mode for troubleshooting metadata extraction
 
 ## Extending the Tool
 
@@ -201,7 +251,7 @@ Here are some ideas for expansion:
 1. **AI Summarization:** Pipe search results to an LLM for synthesis
 2. **Export Search Results:** Add JSON, CSV, or Markdown export options
 3. **Regex Search:** Support advanced regex patterns
-4. **Metadata Extraction:** Read the SQLite database to link transcripts to podcast names
+4. **Better Episode Matching:** Improve matching by using file timestamps or additional metadata
 5. **Web Interface:** Build a Flask app for browser-based search
 6. **Multi-term Search:** Search for multiple terms at once (AND/OR logic)
 7. **Highlighting:** Add color highlighting in terminal output
