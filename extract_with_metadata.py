@@ -657,8 +657,9 @@ Author: {metadata['author']}
             except Exception as e:
                 print(f"Warning: Could not write unmatched transcripts log: {e}")
         
-        # Find database trackids without transcript files (using pre-calculated set)
-        unmatched_db_entries = self.db_trackids - transcript_trackids
+        # Find database trackids without transcript files
+        # Use matched_transcripts to only count DB entries that weren't successfully matched
+        unmatched_db_entries = self.db_trackids - self.matched_transcripts
         self.unmatched_db_count = len(unmatched_db_entries)
         
         # Write unmatched database entries log
@@ -720,10 +721,8 @@ Author: {metadata['author']}
         print(f"Could not map to episodes: {unmatched}")
         print(f"Failed trackid parsing: {len(self.failed_parsing)}")
         
-        # Calculate database entries without transcripts
-        # Use matched_transcripts which only includes successfully matched trackids
-        unmatched_db_count = len(self.db_trackids - self.matched_transcripts)
-        print(f"Database entries without transcripts: {unmatched_db_count}")
+        # Use pre-calculated value from _write_unmatched_logs
+        print(f"Database entries without transcripts: {self.unmatched_db_count}")
         
         print("\nOutput files:")
         print(f"  - Transcripts: {self.output_dir.absolute()}")
