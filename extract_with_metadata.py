@@ -53,42 +53,70 @@ class MetadataExtractor:
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
             
-            # Load all podcasts
-            cursor.execute("""
-                SELECT 
-                    Z_PK,
-                    ZTITLE,
-                    ZAUTHOR
-                FROM ZMTPODCAST
-            """)
+            # First, let's check what tables exist if in debug mode
+            if self.debug:
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = cursor.fetchall()
+                print(f"[DEBUG] Database tables found: {[t[0] for t in tables]}")
             
-            for row in cursor.fetchall():
-                pk, title, author = row
-                self.podcast_cache[pk] = {
-                    'title': title or 'Unknown Podcast',
-                    'author': author or 'Unknown Author'
-                }
+            # Load all podcasts
+            try:
+                cursor.execute("""
+                    SELECT 
+                        Z_PK,
+                        ZTITLE,
+                        ZAUTHOR
+                    FROM ZMTPODCAST
+                """)
+                
+                for row in cursor.fetchall():
+                    pk, title, author = row
+                    self.podcast_cache[pk] = {
+                        'title': title or 'Unknown Podcast',
+                        'author': author or 'Unknown Author'
+                    }
+                    if self.debug and len(self.podcast_cache) <= 3:
+                        print(f"[DEBUG] Loaded podcast {pk}: {title}")
+                
+            except sqlite3.OperationalError as e:
+                print(f"Warning: Could not query ZMTPODCAST table: {e}")
+                if self.debug:
+                    # Try to get column names
+                    cursor.execute("PRAGMA table_info(ZMTPODCAST)")
+                    columns = cursor.fetchall()
+                    print(f"[DEBUG] ZMTPODCAST columns: {[c[1] for c in columns]}")
             
             # Load all episodes
-            cursor.execute("""
-                SELECT 
-                    ZPODCAST,
-                    ZTITLE,
-                    ZPUBDATE,
-                    ZGUID
-                FROM ZMTEPISODE
-            """)
-            
-            for row in cursor.fetchall():
-                podcast_pk, title, pub_date, guid = row
-                if podcast_pk not in self.episode_cache:
-                    self.episode_cache[podcast_pk] = []
+            try:
+                cursor.execute("""
+                    SELECT 
+                        ZPODCAST,
+                        ZTITLE,
+                        ZPUBDATE,
+                        ZGUID
+                    FROM ZMTEPISODE
+                """)
                 
-                self.episode_cache[podcast_pk].append({
-                    'title': title or 'Unknown Episode',
-                    'pub_date': pub_date,
-                    'guid': guid
-                })
+                for row in cursor.fetchall():
+                    podcast_pk, title, pub_date, guid = row
+                    if podcast_pk not in self.episode_cache:
+                        self.episode_cache[podcast_pk] = []
+                    
+                    self.episode_cache[podcast_pk].append({
+                        'title': title or 'Unknown Episode',
+                        'pub_date': pub_date,
+                        'guid': guid
+                    })
+                    if self.debug and sum(len(eps) for eps in self.episode_cache.values()) <= 3:
+                        print(f"[DEBUG] Loaded episode for podcast {podcast_pk}: {title}")
+                
+            except sqlite3.OperationalError as e:
+                print(f"Warning: Could not query ZMTEPISODE table: {e}")
+                if self.debug:
+                    # Try to get column names
+                    cursor.execute("PRAGMA table_info(ZMTEPISODE)")
+                    columns = cursor.fetchall()
+                    print(f"[DEBUG] ZMTEPISODE columns: {[c[1] for c in columns]}")
             
             conn.close()
             
@@ -99,6 +127,9 @@ class MetadataExtractor:
         except Exception as e:
             print(f"Warning: Could not load metadata from database: {e}")
             print("Will use generic filenames instead.\n")
+            if self.debug:
+                import traceback
+                traceback.print_exc()
     
     def _sanitize_filename(self, text):
         """Make text safe for use in filenames.
@@ -160,6 +191,18 @@ class MetadataExtractor:
             print(f"  [DEBUG] No podcast ID found in path: {ttml_path}")
         return None
     
+    def _get_episode_guid_from_path(self, ttml_path):
+        """Extract episode GUID from TTML filename.
+        
+        Args:
+            ttml_path: Path to TTML file
+            
+        Returns:
+            Episode GUID (string) or None
+        """
+        # The filename (without .ttml) is often the episode GUID
+        return ttml_path.stem
+    
     def _get_metadata_from_path(self, ttml_path):
         """Get metadata for a TTML file based on its path.
         
@@ -170,6 +213,10 @@ class MetadataExtractor:
             Dictionary with metadata or None
         """
         podcast_id = self._get_podcast_id_from_path(ttml_path)
+        episode_guid = self._get_episode_guid_from_path(ttml_path)
+        
+        if self.debug:
+            print(f"  [DEBUG] Episode GUID from filename: {episode_guid}")
         
         if podcast_id is None:
             if self.debug:
@@ -181,7 +228,7 @@ class MetadataExtractor:
         if not podcast_info:
             if self.debug:
                 print(f"  [DEBUG] No podcast info found for ID {podcast_id}")
-                print(f"  [DEBUG] Available podcast IDs: {list(self.podcast_cache.keys())}")
+                print(f"  [DEBUG] Available podcast IDs: {list(self.podcast_cache.keys())[:10]}")
             return None
         
         # Get episodes for this podcast
@@ -201,26 +248,39 @@ class MetadataExtractor:
                 'author': podcast_info['author']
             }
         
-        # For now, we'll use the most recent episode for this podcast
-        # In a perfect world, we'd match based on file modification time or other criteria
-        # Sort by pub_date descending
-        episodes_sorted = sorted(
-            [e for e in episodes if e['pub_date'] is not None],
-            key=lambda x: x['pub_date'],
-            reverse=True
-        )
+        # First, try to match by GUID (most accurate)
+        episode = None
+        if episode_guid:
+            for ep in episodes:
+                if ep['guid'] and episode_guid in ep['guid']:
+                    episode = ep
+                    if self.debug:
+                        print(f"  [DEBUG] Matched episode by GUID: {episode['title']}")
+                    break
         
-        if self.debug:
-            print(f"  [DEBUG] Sorted {len(episodes_sorted)} episodes by date")
-        
-        if episodes_sorted:
-            episode = episodes_sorted[0]
+        # If no GUID match, fall back to using the most recent episode
+        if not episode:
             if self.debug:
-                print(f"  [DEBUG] Using most recent episode: {episode['title']}")
-        else:
-            episode = episodes[0] if episodes else None
-            if self.debug and episode:
-                print(f"  [DEBUG] Using first episode (no dates): {episode['title']}")
+                print(f"  [DEBUG] No GUID match, falling back to most recent episode")
+            
+            # Sort by pub_date descending
+            episodes_sorted = sorted(
+                [e for e in episodes if e['pub_date'] is not None],
+                key=lambda x: x['pub_date'],
+                reverse=True
+            )
+            
+            if self.debug:
+                print(f"  [DEBUG] Sorted {len(episodes_sorted)} episodes by date")
+            
+            if episodes_sorted:
+                episode = episodes_sorted[0]
+                if self.debug:
+                    print(f"  [DEBUG] Using most recent episode: {episode['title']}")
+            else:
+                episode = episodes[0] if episodes else None
+                if self.debug and episode:
+                    print(f"  [DEBUG] Using first episode (no dates): {episode['title']}")
         
         if episode:
             return {
