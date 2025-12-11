@@ -1,6 +1,7 @@
 # Transcript output directories
 transcripts/
 my_transcripts/
+transcripts_with_metadata/
 
 # Python
 __pycache__/
